@@ -1,0 +1,333 @@
+// Prisma Schema for Manga Reader Platform
+// Based on blueprint.md specifications
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ENUMS - Note: SQLite uses String types, not native enums
+// Valid UserRole values: OWNER, ADMIN, MODERATOR, MEMBER, GUEST
+// Valid MangaStatus values: ONGOING, COMPLETED, HIATUS
+// Valid MangaType values: MANGA, MANHWA, MANHUA
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  passwordHash      String
+  
+  // Role Definition (OWNER, ADMIN, MODERATOR, MEMBER, GUEST)
+  role              String    @default("MEMBER")
+  
+  // Security
+  isEmailVerified   Boolean   @default(false)
+  twoFactorSecret   String?
+  securityStamp     String    @default(uuid()) // Rotates on password change
+  
+  // Profile
+  username          String    @unique
+  avatarUrl         String?
+  
+  // Activity
+  lastLoginAt       DateTime?
+  registeredAt      DateTime  @default(now())
+  metadata          String?   // JSON string for extensibility
+  
+  // Relations
+  readingHistory    ReadingHistory[]
+  bookmarks         Bookmark[]
+  ratings           Rating[]
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([email])
+  @@index([username])
+}
+
+// ============================================
+// MANGA & CONTENT
+// ============================================
+
+model Manga {
+  id              String      @id @default(uuid())
+  slug            String      @unique // SEO optimized slug
+  
+  // Titles (Multi-language)
+  titleEn         String
+  titleJp         String?
+  titleId         String?     // Bahasa Indonesia
+  
+  // Classification
+  status          String      @default("ONGOING")  // ONGOING, COMPLETED, HIATUS
+  type            String      @default("MANGA")    // MANGA, MANHWA, MANHUA
+  isAdult         Boolean     @default(false)
+  
+  // Content
+  description     String?
+  coverUrl        String?
+  bannerUrl       String?
+  
+  // Aggregated Metrics (Updated via cron)
+  viewsTotal      Int         @default(0)
+  viewsWeekly     Int         @default(0)
+  rating          Float       @default(0) // 0-10
+  ratingCount     Int         @default(0)
+  follows         Int         @default(0)
+  
+  // Relations
+  chapters        Chapter[]
+  genres          MangaGenre[]
+  tags            MangaTag[]
+  authors         MangaAuthor[]
+  bookmarks       Bookmark[]
+  ratings         Rating[]
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([slug])
+  @@index([status])
+  @@index([type])
+  @@index([viewsTotal])
+  @@index([rating])
+}
+
+model Chapter {
+  id              String      @id @default(uuid())
+  mangaId         String
+  manga           Manga       @relation(fields: [mangaId], references: [id], onDelete: Cascade)
+  
+  // Identification
+  number          Float       // Float support (10.1, 10.5)
+  title           String?
+  volume          Int?
+  
+  // Content (Images stored as JSON array of {url, width, height})
+  images          String      // JSON string array of image objects
+  
+  // Source Tracking (Anti-Scrape Protection)
+  sourceOrigin    String?     // 'komiku', 'mangadex'
+  sourceExternalId String?
+  
+  releaseDate     DateTime    @default(now())
+  isLocked        Boolean     @default(false) // For early access/premium
+  
+  // Metrics
+  views           Int         @default(0)
+  
+  // Relations
+  readingHistory  ReadingHistory[]
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@unique([mangaId, number])
+  @@index([mangaId])
+  @@index([releaseDate])
+}
+
+// ============================================
+// TAXONOMY
+// ============================================
+
+model Genre {
+  id              String      @id @default(uuid())
+  name            String      @unique
+  slug            String      @unique
+  description     String?
+  
+  mangas          MangaGenre[]
+  
+  createdAt       DateTime    @default(now())
+}
+
+model Tag {
+  id              String      @id @default(uuid())
+  name            String      @unique
+  slug            String      @unique
+  
+  mangas          MangaTag[]
+  
+  createdAt       DateTime    @default(now())
+}
+
+model Author {
+  id              String      @id @default(uuid())
+  name            String      @unique
+  slug            String      @unique
+  bio             String?
+  imageUrl        String?
+  
+  mangas          MangaAuthor[]
+  
+  createdAt       DateTime    @default(now())
+}
+
+// Junction Tables for Many-to-Many
+model MangaGenre {
+  mangaId         String
+  genreId         String
+  manga           Manga       @relation(fields: [mangaId], references: [id], onDelete: Cascade)
+  genre           Genre       @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  
+  @@id([mangaId, genreId])
+}
+
+model MangaTag {
+  mangaId         String
+  tagId           String
+  manga           Manga       @relation(fields: [mangaId], references: [id], onDelete: Cascade)
+  tag             Tag         @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  
+  @@id([mangaId, tagId])
+}
+
+model MangaAuthor {
+  mangaId         String
+  authorId        String
+  role            String?     // 'writer', 'artist', etc.
+  manga           Manga       @relation(fields: [mangaId], references: [id], onDelete: Cascade)
+  author          Author      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  
+  @@id([mangaId, authorId])
+}
+
+// ============================================
+// USER INTERACTIONS
+// ============================================
+
+model ReadingHistory {
+  id              String      @id @default(uuid())
+  userId          String
+  chapterId       String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chapter         Chapter     @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  
+  lastPage        Int         @default(0)
+  readAt          DateTime    @default(now())
+  
+  @@unique([userId, chapterId])
+  @@index([userId])
+}
+
+model Bookmark {
+  id              String      @id @default(uuid())
+  userId          String
+  mangaId         String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  manga           Manga       @relation(fields: [mangaId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime    @default(now())
+  
+  @@unique([userId, mangaId])
+  @@index([userId])
+}
+
+model Rating {
+  id              String      @id @default(uuid())
+  userId          String
+  mangaId         String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  manga           Manga       @relation(fields: [mangaId], references: [id], onDelete: Cascade)
+  
+  score           Int         // 1-10
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@unique([userId, mangaId])
+}
+
+// ============================================
+// SYSTEM CONFIGURATION
+// ============================================
+
+model SystemConfig {
+  id              String      @id @default(uuid())
+  key             String      @unique
+  value           String
+  isEncrypted     Boolean     @default(false)
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+// ============================================
+// SCRAPER SYSTEM
+// ============================================
+
+model ScraperSource {
+  id              String      @id @default(uuid())
+  name            String      @unique
+  baseUrl         String
+  isEnabled       Boolean     @default(true)
+  priority        Int         @default(0) // Higher = more priority
+  
+  // Circuit Breaker State
+  consecutiveErrors Int       @default(0)
+  lastErrorAt     DateTime?
+  isPaused        Boolean     @default(false)
+  
+  // Jobs
+  jobs            ScraperJob[]
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+model ScraperJob {
+  id              String      @id @default(uuid())
+  sourceId        String
+  source          ScraperSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  
+  jobType         String      // 'manga_list', 'manga_detail', 'chapter'
+  externalId      String?     // ID on the source site
+  priority        Int         @default(0)
+  
+  status          String      @default("pending") // pending, running, completed, failed
+  attempts        Int         @default(0)
+  maxAttempts     Int         @default(3)
+  
+  result          String?     // JSON string for job result data
+  error           String?
+  
+  scheduledAt     DateTime    @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  
+  createdAt       DateTime    @default(now())
+  
+  @@index([status])
+  @@index([priority])
+  @@index([scheduledAt])
+}
+
+// ============================================
+// AUDIT LOGS
+// ============================================
+
+model AuditLog {
+  id              String      @id @default(uuid())
+  userId          String?
+  action          String      // 'login', 'create_manga', 'delete_chapter', etc.
+  resource        String?     // 'user', 'manga', 'chapter', etc.
+  resourceId      String?
+  details         String?
+  ipAddress       String?
+  userAgent       String?
+  
+  createdAt       DateTime    @default(now())
+  
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
